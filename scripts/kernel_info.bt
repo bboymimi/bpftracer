@@ -1,0 +1,9 @@
+#!/usr/bin/env bpftrace
+
+// Capture and display kernel version information from the linux_banner symbol
+BEGIN
+{
+    printf("Capturing kernel information...\n");
+    printf("Kernel version: %s\n", str(kaddr("linux_banner")));
+    exit();
+} 
