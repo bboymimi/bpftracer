@@ -1,0 +1,93 @@
+#!/usr/bin/env bpftrace
+
+BEGIN
+{
+    printf("Tracing hugetlb lock ordering... Hit Ctrl-C to end.\n");
+    @hugetlb_fault_entry = 0;
+}
+
+kprobe:hugetlb_fault
+{
+    @hugetlb_fault_entry++;
+}
+
+kprobe:__mutex_lock
+/@hugetlb_fault_entry && !strncmp(comm, "repr", 4)/
+{
+    // check if the mutex is already in the map
+    if (@mutex_ts[arg0]) {
+        printf("%s pid:%d tid:%d is blocked for mutex %lx\n", comm, pid, tid, arg0);
+        print(kstack);
+        printf("The mutex has been locked by: %lx, pid: %d, tid: %d, comm: %s, stack:%s\n",
+            arg0, @mutex_pid[arg0], @mutex_tid[arg0],
+            @mutex_comm[arg0], @mutex_stack[arg0]);
+        return; // already in the map
+    }
+
+    // create a map to use the mutex as key and store the stack trace and the pid/tid
+    @mutex_ts[arg0] = nsecs;
+    @mutex_stack[arg0] = kstack;
+    @mutex_pid[arg0] = pid;
+    @mutex_tid[arg0] = tid;
+    @mutex_comm[arg0] = comm;
+}
+
+kprobe:mutex_unlock
+/@hugetlb_fault_entry && !strncmp(comm, "repr", 4)/
+{
+    $arg0 = (uint64)arg0;
+    delete(@mutex_ts[arg0]);
+    delete(@mutex_stack[arg0]);
+    delete(@mutex_pid[arg0]);
+    delete(@mutex_tid[arg0]);
+    delete(@mutex_comm[arg0]);
+}
+
+kretprobe:filemap_get_entry
+/@hugetlb_fault_entry && !strncmp(comm, "repr", 4)/
+{
+    $folio = (uint64)retval;
+    $max_err = (uint64)4095;
+    // check if the return value is a folio, by checking if the folio is error
+    if ($folio > -$max_err) {
+        return; // not a folio; error pointer
+    }
+
+    // check if the folio is already in the map
+    if (@folio_ts[$folio]) {
+        printf("%s pid:%d tid:%d is blocked for folio %lx\n", comm, pid, tid, $folio);
+        print(kstack);
+        printf("The folio has been locked by: %lx, pid: %d, tid: %d, comm: %s, stack:%s\n",
+            $folio, @folio_pid[$folio], @folio_tid[$folio],
+            @folio_comm[$folio], @folio_stack[$folio]);
+        return; // already in the map
+    }
+
+    // create a map to use the folio as key and store the stack trace and the pid/tid
+    @folio_ts[$folio] = nsecs;
+    @folio_stack[$folio] = kstack;
+    @folio_pid[$folio] = pid;
+    @folio_tid[$folio] = tid;
+    @folio_comm[$folio] = comm;
+}
+
+kprobe:folio_unlock
+/@hugetlb_fault_entry && !strncmp(comm, "repr", 4)/
+{
+    $folio = (uint64)arg0;
+    delete(@folio_ts[$folio]);
+    delete(@folio_stack[$folio]);
+    delete(@folio_pid[$folio]);
+    delete(@folio_tid[$folio]);
+    delete(@folio_comm[$folio]);
+}
+
+
+kretprobe:hugetlb_fault
+{
+    @hugetlb_fault_entry--;
+}
+
+END
+{
+}
